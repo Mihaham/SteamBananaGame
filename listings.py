@@ -13,7 +13,7 @@ url_main = "https://steamcommunity.com/market/search/render/"
 #app_id = 730 #CS2
 
 @lg.catch()
-def get_app_items(app_id):
+def get_app_items(app_id: int) -> (set, set, list):
 
     def get_items(start_page, count):
         time.sleep(10)
@@ -22,6 +22,7 @@ def get_app_items(app_id):
             "count" : int(count),
             "sort_column": "price",
             "sort_dir": "asc",
+            "appid" : app_id,
             "norender" : 1 #to get json
         }
         r = requests.get(url_main, params=payload)
@@ -41,12 +42,14 @@ def get_app_items(app_id):
     amount = 1
     apps = set()
     apps_id = set()
+    objects = []
     with open(f"apps/{app_id}.txt", "w", encoding="utf-8") as file:
         for i in range((all_cellings + 99)//100):
             all_objects = get_items(i*100, 100)
             if all_objects:
                 lg.warning(f"Got {len(all_objects['results'])} objects")
                 for line in all_objects["results"]:
+                    objects.append(line)
                     lg.debug(f"{line['app_name']}: {line['asset_description']['appid']}")
                     apps.add(line["app_name"])
                     apps_id.add(line['asset_description']['appid'])
@@ -65,11 +68,11 @@ def get_app_items(app_id):
                 for app_id in apps_id:
                     file2.write(str(app_id))
                     file2.write("\n")
-    return apps, apps_id
+    return apps, apps_id, objects
 
 
 def main():
-    apps, apps_id = get_app_items(0)
+    apps, apps_id, all_objects = get_app_items(0)
 
     lg.info(f"Apps, that have items: {len(apps)}")
     lg.info(f"{apps}")

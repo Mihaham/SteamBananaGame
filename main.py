@@ -1,88 +1,121 @@
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
-import sys
+import asyncio
+import datetime
+import os.path
 import time
 
+from multiprocessing import Process
+
+import pandas
+import requests
 from loguru import logger as lg
 
-def check_keyword(keyword, bad_words, string):
-    for word in bad_words:
-        if word in string:
-            lg.warning(f"The word '{word}' in '{string}' is blocked")
-            return False
-    for word in keyword:
-        if word not in string:
-            lg.warning(f"The word '{word}' was not found in {string}")
-            return False
-    lg.info(f"The string '{string}' is good")
-    return True
+from listings import get_app_items
+
+APP_ID = 2923300  # BANANA
+# APP_ID = 578080 #PUBG
+# APP_ID = 730 #CS2
+
+head = ["ITEM_ID", "Year", "Month", "Day", "Hours", "Minutes", "sec", "type", "quantity", "price", "time"]
+
 
 @lg.catch()
+def get_html(url: str) -> str:
+    time.sleep(15)
+    payload = {}
+    response = requests.get(url)
+    lg.debug(f"Status of {url}: {response.status_code}")
+    return response.text
+
+
+@lg.catch()
+def get_item_id(url: str) -> int:
+    text = get_html(url)
+    for line in text.splitlines():
+        if line.find("Market_LoadOrderSpread") != -1:
+            id = int(line.split('(')[1].split(')')[0])
+            lg.debug(f"Market id : {id}")
+            return id
+    return None
+
+
+@lg.catch()
+def get_activity(item_id: int, url="https://steamcommunity.com/market/itemordersactivity") -> list:
+    payload = {
+        "country": "RU",
+        "language": "russian",
+        "currency": 5,
+        "norender": 1,
+        "item_nameid": item_id
+    }
+    response = requests.get(url, params=payload)
+
+    lg.debug(f"{item_id}. Status of {url}: {response}")
+    return response.json()
+
+
+@lg.catch()
+def start_polling_app(app_id: int) -> None:
+    if not os.path.exists(f"activity/activity_{app_id}.csv"):
+        df = pandas.DataFrame(columns=head)
+        df.to_csv(f"activity/activity_{app_id}.csv", index=False)
+
+    #apps, apps_id, items = get_app_items(app_id)
+
+    item_ids = []
+    # for item in items:
+    #     lg.debug(f"Item: {item}")
+    #     url = f"https://steamcommunity.com/market/listings/{app_id}/{item['name']}"
+    #     lg.info(f"url: {url}")
+    #     new_id = get_item_id(url)
+    #     if new_id is not None:
+    #         item_ids.append(new_id)
+    #     else:
+    #         lg.warning(f"Returned None for {item['name']}")
+    with open("cache.txt", "r", encoding="utf-8") as file:
+        item_ids = list(map(int,file.readlines()))
+
+    with open("cache2.txt", "w", encoding="utf-8") as f:
+        for item_id in item_ids:
+            f.write(f"{item_id}\n")
+
+    lg.info(f"Number of items: {len(item_ids)}")
+    lg.info(f"Ids: {item_ids}")
+
+    proc = []
+    for item_id in item_ids:
+        if item_id is not None:
+            p = Process(target=poll_item, args=(item_id, app_id))
+            p.start()
+            proc.append(p)
+    for p in proc:
+        p.join()
+
+
+def poll_item(item_id, app_id):
+    file = f"activity/activity_{app_id}_{item_id}.csv"
+    if not os.path.exists(file):
+        df = pandas.DataFrame(columns=head)
+        df.to_csv(file, index=False)
+    df = pandas.read_csv(file)
+    while True:
+        time.sleep(2)
+        activity = get_activity(item_id)
+        lg.debug(f"{item_id}: {activity}")
+        time_now = datetime.datetime.now()
+
+        for action in activity["activity"]:
+            data = [item_id, time_now.year, time_now.month, time_now.day, time_now.hour,
+                    time_now.minute, time_now.second, action['type'], action['quantity'],
+                    action['price'],
+                    action['time']]
+            data = {a: [str(b)] for a, b in zip(head, data)}
+            data = pandas.DataFrame(data)
+            df = pandas.concat([df, data], ignore_index=True)
+        df.to_csv(file, index=False)
+
+
 def main() -> None:
-    sys.setrecursionlimit(3000)
-
-    lg.remove()
-    lg.level("INFO", color="<cyan>")
-    lg.add("debug.txt", format="{time} | {level} | {file} | {line} | {message}", level="DEBUG",
-           rotation="100 MB",
-           colorize=True, compression="zip")
-    lg.add(sys.stdout,
-           format="<level><b>{time} | {level} | {file} | {line} | {message}</b></level>",
-           level="DEBUG",
-           colorize=True)
-
-    lg.info("Started parsing")
-
-    main_href = "https://steamcommunity.com/market/search?appid=2923300"
-    keyword = ["market", "2923300"]
-    bad_words = ["login"]
-
-    visited = set()
-
-    def parse(start_href: str, keyword: list, bad_words : list) -> None:
-        lg.info(f"Parsing {start_href}")
-        try:
-            response = requests.get(start_href)
-        except requests.exceptions.ConnectionError:
-            lg.error(f"Connection Error to href {start_href}")
-        except Exception as e:
-            lg.error(f"Error: {e}")
-            return None
-        lg.info(f"{response.status_code}")
-        with open("index.html", "w", encoding="utf-8") as file:
-            file.write(response.text)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, "html.parser")
-
-            lg.debug(f"Got soup for href {start_href}")
-            tags = soup.find_all("a")
-            urls = []
-            for tag in tags:
-                href = tag.get("href")
-                if href is not None and href != "" and href != "#":
-                    urls.append(href)
-            lg.debug(f"Found {len(urls)}: {urls}")
-
-            for url in urls:
-                url_join = urljoin(start_href, url)
-                if url_join not in visited:
-
-                    if check_keyword(keyword, bad_words, url_join) and url_join.find("last_url") == -1:
-                        visited.add(url_join)
-                        parse(url_join, keyword, bad_words)
-
-
-    parse(main_href, keyword, bad_words)
-
-    with open(f"urls_app_{2923300}_.txt", "w", encoding="utf-8") as f:
-        lg.info(f"Found {len(visited)} urls:")
-        for url in visited:
-            if "listings" in url:
-                lg.info(f"{url}")
-                f.write(f"{url}\n")
-
-
+    start_polling_app(APP_ID)
 
 
 if __name__ == '__main__':
